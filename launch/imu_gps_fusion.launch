@@ -1,0 +1,10 @@
+<launch>
+    <node pkg="nmea_navsat_driver" type="nmea_topic_driver" name="nmea_topic_driver" output="screen"/>
+
+    <node pkg="imu_gps_fusion" type="imu_gps_fusion_node" name="imu_gps_fusion_node" output="screen">
+        <param name="sigma_an" value="7.8531619738053877e-04"/>
+        <param name="sigma_wn" value="1.5641921981365443e-04"/>
+        <param name="sigma_aw" value="3.2064659601889169e-04"/>
+        <param name="sigma_ww" value="5.8371294942786571e-05"/>
+    </node>
+</launch>
