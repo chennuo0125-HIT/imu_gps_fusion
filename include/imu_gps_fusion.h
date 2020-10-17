@@ -22,6 +22,10 @@ public:
     ImuGpsFusion();
     ~ImuGpsFusion();
 
+    // use imu datas at start to initial initial pose
+    // ref: https://github.com/daniilidis-group/msckf_mono
+    void imuInit(const vector<ImuData<double>> &imu_datas);
+
     // config imu variance
     void cfgImuVar(double sigma_an, double sigma_wn, double sigma_aw, double sigma_ww);
 
@@ -65,7 +69,7 @@ private:
     double ref_lati_;
     double ref_long_;
     double ref_alti_;
-    WgsConversions gpsConverter_;
+    WgsConversions gps_converter_;
 
     Eigen::Vector3d g_;                //gravity
     State<double> no_state_;           //nominal state

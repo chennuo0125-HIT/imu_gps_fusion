@@ -79,6 +79,14 @@ void processThread()
         // init correlative param
         if (last_gps_time < 0)
         {
+            // use imu datas at start to initial imu pose
+            vector<Fusion::ImuData<double>> imu_datas;
+            for (auto &imu_msg : imu_buffer)
+            {
+                imu_datas.push_back(fromImuMsg(*imu_msg));
+            }
+            imu_gps_fuser.imuInit(imu_datas);
+
             // set reference ll for convert ll to enu frame
             imu_gps_fuser.cfgRefGps(gps_buffer[0]->latitude, gps_buffer[0]->longitude, gps_buffer[0]->altitude);
 
