@@ -11,6 +11,8 @@
 
 using namespace std;
 
+int imu_freq = 100; //imu frequency is location frequency
+
 nav_msgs::Path path; //result path
 
 vector<sensor_msgs::ImuConstPtr> imu_buffer;
@@ -20,7 +22,10 @@ mutex msg_mtx;
 Fusion::ImuGpsFusion imu_gps_fuser;
 ros::Publisher traj_puber;
 double last_gps_time = -1.0;
-Fusion::ImuData<double> last_gps_imu; //last interpolated imu data at gps time
+Fusion::ImuData<double> last_gps_imu;     //last interpolated imu data at gps time
+double last_imu_time = -1.0;              //last imu time for predict
+Fusion::ImuData<double> last_imu;         //last imu data for predict
+Fusion::State<double> last_updated_state; //last updated state by gps
 
 void imuCallback(const sensor_msgs::ImuConstPtr &msg)
 {
@@ -63,12 +68,13 @@ Fusion::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
 
 void processThread()
 {
-    ros::Rate loop_rate(5);
+    ros::Rate loop_rate(imu_freq);
     while (ros::ok())
     {
         unique_lock<mutex> lock(msg_mtx);
 
-        if (!imu_buffer.size() || !gps_buffer.size())
+        // if no data, no need update state
+        if (!imu_buffer.size() && !gps_buffer.size())
         {
             ROS_INFO_THROTTLE(10, "wait for gps or imu msg ......");
             lock.unlock();
@@ -79,6 +85,15 @@ void processThread()
         // init correlative param
         if (last_gps_time < 0)
         {
+            // wait for enough sensor data to init
+            if (!imu_buffer.size() || !gps_buffer.size())
+            {
+                ROS_INFO_THROTTLE(10, "wait for gps or imu msg ......");
+                lock.unlock();
+                loop_rate.sleep();
+                continue;
+            }
+
             // use imu datas at start to initial imu pose
             vector<Fusion::ImuData<double>> imu_datas;
             for (auto &imu_msg : imu_buffer)
@@ -112,6 +127,9 @@ void processThread()
             //record last gps frame time and interpolated imu data
             last_gps_imu = fromImuMsg(inter_imu);
             last_gps_time = gps_buffer[0]->header.stamp.toSec();
+            last_imu = last_gps_imu;
+            last_imu_time = last_gps_time;
+            last_updated_state = imu_gps_fuser.getState();
 
             // delete old imu datas and gps data
             imu_buffer.erase(imu_buffer.begin(), iter);
@@ -122,72 +140,101 @@ void processThread()
             continue;
         }
 
-        // collect imu datas during two neighbor gps frames
-        vector<pair<Fusion::ImuData<double>, double>> imu_datas(0);
-        // step0: search first imu data after gps data
-        auto iter = imu_buffer.begin();
-        for (; iter != imu_buffer.end(); iter++)
+        // use imu predict location for increase locate frequency
+        for (auto &imu_msg : imu_buffer)
         {
-            if ((*iter)->header.stamp > gps_buffer[0]->header.stamp)
-                break;
-        }
-        if (imu_buffer.end() == iter) // no imu data after first gps data, wait for new imu data
-        {
-            lock.unlock();
-            loop_rate.sleep();
-            continue;
-        }
-        // step1: interpolate imu data at gps time
-        assert(imu_buffer.begin() != iter);
-        sensor_msgs::Imu inter_imu;
-        double cur_stamp = gps_buffer[0]->header.stamp.toSec();
-        interpolateImuData(*(iter - 1), *iter, cur_stamp, inter_imu);
-        // step2: add imu data during last gps and first imu
-        pair<Fusion::ImuData<double>, double> first_data;
-        first_data.first = last_gps_imu;
-        first_data.second = imu_buffer[0]->header.stamp.toSec() - last_gps_time;
-        imu_datas.push_back(move(first_data));
-        // step3: add imu data during first imu and last imu before gps data
-        if (distance(imu_buffer.begin(), iter) >= 2)
-        {
-            for (auto tmp_iter = imu_buffer.begin(); tmp_iter != iter - 1; tmp_iter++)
+            double cur_imu_time = imu_msg->header.stamp.toSec();
+            if (cur_imu_time > last_imu_time)
             {
-                auto next_iter = tmp_iter + 1;
-                pair<Fusion::ImuData<double>, double> tmp_data;
-                tmp_data.first = fromImuMsg(*(*tmp_iter));
-                tmp_data.second = ((*next_iter)->header.stamp - (*tmp_iter)->header.stamp).toSec();
-                imu_datas.push_back(move(tmp_data));
+                double dt = cur_imu_time - last_imu_time;
+                imu_gps_fuser.updateNominalState(last_imu, dt);
+                last_imu = fromImuMsg(*imu_msg);
+                last_imu_time = cur_imu_time;
             }
         }
-        // step4: add imu data during gps and last imu before gps data
-        pair<Fusion::ImuData<double>, double> last_data;
-        last_data.first = fromImuMsg(*(*(iter - 1)));
-        last_data.second = cur_stamp - (*(iter - 1))->header.stamp.toSec();
-        imu_datas.push_back(move(last_data));
 
-        // generate gps data
-        Fusion::GpsData<double> gps_data;
-        gps_data.data[0] = gps_buffer[0]->latitude;
-        gps_data.data[1] = gps_buffer[0]->longitude;
-        gps_data.data[2] = gps_buffer[0]->altitude;
-        gps_data.cov.setIdentity();
-        gps_data.cov(0, 0) = gps_buffer[0]->position_covariance[0];
-        gps_data.cov(1, 1) = gps_buffer[0]->position_covariance[4];
-        gps_data.cov(2, 2) = gps_buffer[0]->position_covariance[8];
+        // use gps data to update state
+        if (gps_buffer.size() != 0)
+        {
+            // recover to last updated state for imu predict again
+            imu_gps_fuser.recoverState(last_updated_state);
 
-        // update state (core)
-        imu_gps_fuser.gpsUpdate(gps_data, imu_datas);
+            // collect imu datas during two neighbor gps frames
+            vector<pair<Fusion::ImuData<double>, double>> imu_datas(0);
+            // step0: search first imu data after gps data
+            auto iter = imu_buffer.begin();
+            for (; iter != imu_buffer.end(); iter++)
+            {
+                if ((*iter)->header.stamp > gps_buffer[0]->header.stamp)
+                    break;
+            }
+            if (imu_buffer.end() == iter) // no imu data after first gps data, wait for new imu data
+            {
+                lock.unlock();
+                loop_rate.sleep();
+                continue;
+            }
+            // step1: interpolate imu data at gps time
+            assert(imu_buffer.begin() != iter);
+            sensor_msgs::Imu inter_imu;
+            double cur_stamp = gps_buffer[0]->header.stamp.toSec();
+            interpolateImuData(*(iter - 1), *iter, cur_stamp, inter_imu);
+            // step2: add imu data during last gps and first imu
+            pair<Fusion::ImuData<double>, double> first_data;
+            first_data.first = last_gps_imu;
+            first_data.second = imu_buffer[0]->header.stamp.toSec() - last_gps_time;
+            imu_datas.push_back(move(first_data));
+            // step3: add imu data during first imu and last imu before gps data
+            if (distance(imu_buffer.begin(), iter) >= 2)
+            {
+                for (auto tmp_iter = imu_buffer.begin(); tmp_iter != iter - 1; tmp_iter++)
+                {
+                    auto next_iter = tmp_iter + 1;
+                    pair<Fusion::ImuData<double>, double> tmp_data;
+                    tmp_data.first = fromImuMsg(*(*tmp_iter));
+                    tmp_data.second = ((*next_iter)->header.stamp - (*tmp_iter)->header.stamp).toSec();
+                    imu_datas.push_back(move(tmp_data));
+                }
+            }
+            // step4: add imu data during gps and last imu before gps data
+            pair<Fusion::ImuData<double>, double> last_data;
+            last_data.first = fromImuMsg(*(*(iter - 1)));
+            last_data.second = cur_stamp - (*(iter - 1))->header.stamp.toSec();
+            imu_datas.push_back(move(last_data));
 
-        // update last data
-        sensor_msgs::Imu gps_imu_msg;
-        interpolateImuData(*(iter - 1), *iter, cur_stamp, gps_imu_msg);
-        last_gps_imu = fromImuMsg(gps_imu_msg);
-        last_gps_time = cur_stamp;
+            // generate gps data
+            Fusion::GpsData<double> gps_data;
+            gps_data.data[0] = gps_buffer[0]->latitude;
+            gps_data.data[1] = gps_buffer[0]->longitude;
+            gps_data.data[2] = gps_buffer[0]->altitude;
+            gps_data.cov.setIdentity();
+            gps_data.cov(0, 0) = gps_buffer[0]->position_covariance[0];
+            gps_data.cov(1, 1) = gps_buffer[0]->position_covariance[4];
+            gps_data.cov(2, 2) = gps_buffer[0]->position_covariance[8];
+
+            // update state (core)
+            imu_gps_fuser.gpsUpdate(gps_data, imu_datas);
+
+            // update last data
+            sensor_msgs::Imu gps_imu_msg;
+            interpolateImuData(*(iter - 1), *iter, cur_stamp, gps_imu_msg);
+            last_gps_imu = fromImuMsg(gps_imu_msg);
+            last_gps_time = cur_stamp;
+            last_imu = last_gps_imu;
+            last_imu_time = last_gps_time;
+
+            // delete old data
+            gps_buffer.erase(gps_buffer.begin());
+            imu_buffer.erase(imu_buffer.begin(), iter);
+
+            // update last state
+            last_updated_state = imu_gps_fuser.getState();
+        }
 
         // get result pose, and publish
         if (traj_puber.getNumSubscribers() != 0)
         {
-            Fusion::State<double> result = imu_gps_fuser.getState();
+            Fusion::State<double> result = imu_gps_fuser.getNominalState();
             geometry_msgs::PoseStamped pose;
             pose.header.frame_id = "world";
             pose.header.stamp = gps_buffer[0]->header.stamp;
@@ -202,10 +249,6 @@ void processThread()
             path.header = pose.header;
             traj_puber.publish(path);
         }
-
-        // delete old data
-        gps_buffer.erase(gps_buffer.begin());
-        imu_buffer.erase(imu_buffer.begin(), iter);
 
         lock.unlock();
         loop_rate.sleep();
@@ -226,6 +269,12 @@ int main(int argc, char **argv)
         return 0;
     }
     imu_gps_fuser.cfgImuVar(sigma_an, sigma_wn, sigma_aw, sigma_ww);
+
+    // load imu freqency param
+    if (!ph.getParam("imu_freq", imu_freq))
+    {
+        cout << "no config imu_freq param, use default 100 !" << endl;
+    }
 
     ros::Subscriber imu_sub = nh.subscribe<sensor_msgs::Imu>("/imu/data", 1000, imuCallback);
     ros::Subscriber gps_sub = nh.subscribe<sensor_msgs::NavSatFix>("/fix", 1000, gpsCallback);

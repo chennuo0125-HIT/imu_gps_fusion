@@ -7,6 +7,7 @@
         <param name="sigma_wn" value="1.0e-4"/>
         <param name="sigma_aw" value="1.0e-6"/>
         <param name="sigma_ww" value="1.0e-8"/>
+        <param name="imu_freq" value="100"/>
     </node>
 
     <node pkg="rviz" type="rviz" name="rviz" output="screen" args="-d $(find imu_gps_fusion)/launch/rviz.rviz"/>

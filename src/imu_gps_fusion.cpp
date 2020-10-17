@@ -85,10 +85,8 @@ void ImuGpsFusion::updateNominalState(const ImuData<double> &imu_data, double dt
     Eigen::Matrix3d R(no_state_.q);
     no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_data.acc - no_state_.a_b) + g_) * dt * dt;
     no_state_.v = no_state_.v + (R * (imu_data.acc - no_state_.a_b) + g_) * dt;
-    // no_state_.q = no_state_.q * Eigen::Quaterniond(1, q_v[0], q_v[1], q_v[2]);
     Eigen::Vector3d q_v = (imu_data.gyr - no_state_.w_b) * dt;
     no_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(q_v.norm(), q_v.normalized()).toRotationMatrix());
-    // cout << "after : " << no_state_.p.transpose() << "   " << no_state_.v.transpose() << " " << no_state_.a_b.transpose() << endl;
 }
 
 void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
@@ -150,14 +148,14 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<pair<
     {
         imuPredict(iter.first, iter.second);
     }
-    cout << "pre : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "    " << no_state_.a_b.transpose() << endl;
+    // cout << "pre : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "    " << no_state_.a_b.transpose() << endl;
 
     // transform gps latitude and longitude coordinate to position in enu frame
     double enu[3];
     double lla[3] = {gps_data.data[0], gps_data.data[1], gps_data.data[2]};
     double ref[3] = {ref_lati_, ref_long_, ref_alti_};
     gps_converter_.lla2enu(enu, lla, ref);
-    cout << "gps: " << enu[0] << " " << enu[1] << " " << enu[2] << endl;
+    // cout << "gps: " << enu[0] << " " << enu[1] << " " << enu[2] << endl;
 
     // update
     updateH();
@@ -178,12 +176,22 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<pair<
     ac_state_.a_b = no_state_.a_b + estate.d_a_b;
     ac_state_.w_b = no_state_.w_b + estate.d_w_b;
     no_state_ = ac_state_;
-    cout << "upd : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "     " << no_state_.a_b.transpose() << endl;
+    // cout << "upd : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "     " << no_state_.a_b.transpose() << endl;
 }
 
 State<double> ImuGpsFusion::getState()
 {
     return ac_state_;
+}
+
+State<double> ImuGpsFusion::getNominalState()
+{
+    return no_state_;
+}
+
+void ImuGpsFusion::recoverState(const Fusion::State<double> &last_updated_state)
+{
+    no_state_ = ac_state_ = last_updated_state;
 }
 
 } // namespace Fusion

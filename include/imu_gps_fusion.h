@@ -57,6 +57,10 @@ public:
 
     // get result
     State<double> getState();
+    State<double> getNominalState();
+
+    // set state
+    void recoverState(const Fusion::State<double> &last_updated_state);
 
 private:
     // sensor noise
