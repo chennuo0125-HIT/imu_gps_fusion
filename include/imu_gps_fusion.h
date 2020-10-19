@@ -34,7 +34,7 @@ public:
 
     // nominal state update, ref formula (156)
     void
-    updateNominalState(const ImuData<double> &imu_data, double dt);
+    updateNominalState(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data);
 
     // calculate jacobi Fx, ref formula (166)
     void calcF(const ImuData<double> &imu_data, double dt);
@@ -43,7 +43,7 @@ public:
     void updateQ(double dt);
 
     // eskf predict stage
-    void imuPredict(const ImuData<double> &imu_data, double dt);
+    void imuPredict(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data);
 
     // update error state jacobi
     void updateH();
@@ -53,7 +53,7 @@ public:
 
     // eskf measure update stage
     // imu_datas pair: fisrt->imu_data second->dt
-    void gpsUpdate(const GpsData<double> &gps_data, const vector<pair<ImuData<double>, double>> &imu_datas);
+    void gpsUpdate(const GpsData<double> &gps_data, const vector<ImuData<double>> &imu_datas);
 
     // get result
     State<double> getState();

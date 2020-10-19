@@ -79,13 +79,16 @@ void ImuGpsFusion::cfgRefGps(double latitude, double longitute, double altitude)
     ref_alti_ = altitude;
 }
 
-void ImuGpsFusion::updateNominalState(const ImuData<double> &imu_data, double dt)
+void ImuGpsFusion::updateNominalState(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data)
 {
+    double dt = imu_data.stamp - last_imu_data.stamp;
     // cout << "befor : " << no_state_.p.transpose() << "   " << no_state_.v.transpose() << " " << no_state_.a_b.transpose() << endl;
+    Eigen::Vector3d imu_acc = 0.5 * (imu_data.acc + last_imu_data.acc);
+    Eigen::Vector3d imu_gyr = 0.5 * (imu_data.gyr + last_imu_data.gyr);
     Eigen::Matrix3d R(no_state_.q);
-    no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_data.acc - no_state_.a_b) + g_) * dt * dt;
-    no_state_.v = no_state_.v + (R * (imu_data.acc - no_state_.a_b) + g_) * dt;
-    Eigen::Vector3d q_v = (imu_data.gyr - no_state_.w_b) * dt;
+    no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_acc - no_state_.a_b) + g_) * dt * dt;
+    no_state_.v = no_state_.v + (R * (imu_acc - no_state_.a_b) + g_) * dt;
+    Eigen::Vector3d q_v = (imu_gyr - no_state_.w_b) * dt;
     if (q_v.norm() > 1e-12)
         no_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(q_v.norm(), q_v.normalized()).toRotationMatrix());
 }
@@ -113,9 +116,10 @@ void ImuGpsFusion::updateQ(double dt)
     Qi_.block<3, 3>(9, 9) *= sigma_ww_2_ * dt;
 }
 
-void ImuGpsFusion::imuPredict(const ImuData<double> &imu_data, double dt)
+void ImuGpsFusion::imuPredict(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data)
 {
-    updateNominalState(imu_data, dt);
+    double dt = imu_data.stamp - last_imu_data.stamp;
+    updateNominalState(last_imu_data, imu_data);
     calcF(imu_data, dt);
     updateQ(dt);
     P_ = Fx_ * P_ * Fx_.transpose() + Fi_ * Qi_ * Fi_.transpose();
@@ -135,7 +139,9 @@ void ImuGpsFusion::updateH()
     X_dx.block<4, 3>(6, 6) *= 0.5;
 
     // use the chain rule to update H matrix
-    H_ = Hx_ * X_dx;
+    // H_ = Hx_ * X_dx;
+    H_.setZero();
+    H_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
 }
 
 void ImuGpsFusion::updateV(const GpsData<double> &gps_data)
@@ -143,13 +149,12 @@ void ImuGpsFusion::updateV(const GpsData<double> &gps_data)
     V_ = gps_data.cov;
 }
 
-void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<pair<ImuData<double>, double>> &imu_datas)
+void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<ImuData<double>> &imu_datas)
 {
     // predict stage
-    for (const auto &iter : imu_datas)
-    {
-        imuPredict(iter.first, iter.second);
-    }
+    assert(imu_datas.size() > 2);
+    for (auto it = imu_datas.begin() + 1; it != imu_datas.end(); it++)
+        imuPredict(*(it - 1), *it);
     // cout << "pre : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "    " << no_state_.a_b.transpose() << endl;
 
     // transform gps latitude and longitude coordinate to position in enu frame
@@ -161,7 +166,11 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<pair<
 
     // update
     updateH();
-    Eigen::Matrix<double, 15, 3> K = P_ * H_.transpose() * (H_ * P_ * H_.transpose() + V_).inverse();
+
+    updateV(gps_data);
+
+    Eigen::Matrix<double, 15, 3>
+        K = P_ * H_.transpose() * (H_ * P_ * H_.transpose() + V_).inverse();
     Eigen::Matrix<double, 15, 1> dX = K * (Eigen::Vector3d(enu[0], enu[1], enu[2]) - no_state_.p);
     ErrorState<double> estate;
     estate.d_p = dX.block<3, 1>(0, 0);

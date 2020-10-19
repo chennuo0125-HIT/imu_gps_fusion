@@ -17,25 +17,24 @@ nav_msgs::Path path; //result path
 
 vector<sensor_msgs::ImuConstPtr> imu_buffer;
 vector<sensor_msgs::NavSatFixConstPtr> gps_buffer;
-mutex msg_mtx;
+mutex imu_mtx, gps_mtx;
 
-Fusion::ImuGpsFusion imu_gps_fuser;
+Fusion::ImuGpsFusion imu_gps_fuser; // fuser object
 ros::Publisher traj_puber;
-double last_gps_time = -1.0;
+bool initialized = false;
 Fusion::ImuData<double> last_gps_imu;     //last interpolated imu data at gps time
-double last_imu_time = -1.0;              //last imu time for predict
 Fusion::ImuData<double> last_imu;         //last imu data for predict
 Fusion::State<double> last_updated_state; //last updated state by gps
 
 void imuCallback(const sensor_msgs::ImuConstPtr &msg)
 {
-    unique_lock<mutex> lock(msg_mtx);
+    unique_lock<mutex> lock(imu_mtx);
     imu_buffer.push_back(msg);
 }
 
 void gpsCallback(const sensor_msgs::NavSatFixConstPtr &msg)
 {
-    unique_lock<mutex> lock(msg_mtx);
+    unique_lock<mutex> lock(gps_mtx);
     gps_buffer.push_back(msg);
 }
 
@@ -56,6 +55,7 @@ void interpolateImuData(const sensor_msgs::ImuConstPtr &first_data, const sensor
 Fusion::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
 {
     Fusion::ImuData<double> imu_data;
+    imu_data.stamp = msg.header.stamp.toSec();
     imu_data.gyr[0] = msg.angular_velocity.x;
     imu_data.gyr[1] = msg.angular_velocity.y;
     imu_data.gyr[2] = msg.angular_velocity.z;
@@ -66,30 +66,67 @@ Fusion::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
     return move(imu_data);
 }
 
+Fusion::GpsData<double> fromGpsMsg(const sensor_msgs::NavSatFix &msg)
+{
+    Fusion::GpsData<double> gps_data;
+    gps_data.data[0] = msg.latitude;
+    gps_data.data[1] = msg.longitude;
+    gps_data.data[2] = msg.altitude;
+    gps_data.cov.setIdentity();
+    gps_data.cov(0, 0) = msg.position_covariance[0];
+    gps_data.cov(1, 1) = msg.position_covariance[4];
+    gps_data.cov(2, 2) = msg.position_covariance[8];
+    return move(gps_data);
+}
+
+void pubResult()
+{
+    if (traj_puber.getNumSubscribers() != 0)
+    {
+        Fusion::State<double> result = imu_gps_fuser.getNominalState();
+        geometry_msgs::PoseStamped pose;
+        pose.header.frame_id = "world";
+        pose.header.stamp = gps_buffer[0]->header.stamp;
+        pose.pose.position.x = result.p[0];
+        pose.pose.position.y = result.p[1];
+        pose.pose.position.z = result.p[2];
+        pose.pose.orientation.w = result.q.w();
+        pose.pose.orientation.x = result.q.x();
+        pose.pose.orientation.y = result.q.y();
+        pose.pose.orientation.z = result.q.z();
+        path.poses.push_back(pose);
+        path.header = pose.header;
+        traj_puber.publish(path);
+    }
+}
+
 void processThread()
 {
     ros::Rate loop_rate(imu_freq);
     while (ros::ok())
     {
-        unique_lock<mutex> lock(msg_mtx);
+        unique_lock<mutex> imu_lock(imu_mtx);
+        unique_lock<mutex> gps_lock(gps_mtx);
 
         // if no data, no need update state
         if (!imu_buffer.size() && !gps_buffer.size())
         {
             ROS_INFO_THROTTLE(10, "wait for gps or imu msg ......");
-            lock.unlock();
+            imu_lock.unlock();
+            gps_lock.unlock();
             loop_rate.sleep();
             continue;
         }
 
         // init correlative param
-        if (last_gps_time < 0)
+        if (!initialized)
         {
             // wait for enough sensor data to init
             if (!imu_buffer.size() || !gps_buffer.size())
             {
                 ROS_INFO_THROTTLE(10, "wait for gps or imu msg ......");
-                lock.unlock();
+                imu_lock.unlock();
+                gps_lock.unlock();
                 loop_rate.sleep();
                 continue;
             }
@@ -116,7 +153,8 @@ void processThread()
             {
                 if (imu_buffer.begin() == iter)
                     gps_buffer.erase(gps_buffer.begin()); //no imu data before first gps data, cant interpolate at gps stamp
-                lock.unlock();
+                imu_lock.unlock();
+                gps_lock.unlock();
                 loop_rate.sleep();
                 continue;
             }
@@ -126,30 +164,32 @@ void processThread()
 
             //record last gps frame time and interpolated imu data
             last_gps_imu = fromImuMsg(inter_imu);
-            last_gps_time = gps_buffer[0]->header.stamp.toSec();
+            last_gps_imu.stamp = cur_stamp;
             last_imu = last_gps_imu;
-            last_imu_time = last_gps_time;
             last_updated_state = imu_gps_fuser.getState();
 
             // delete old imu datas and gps data
             imu_buffer.erase(imu_buffer.begin(), iter);
             gps_buffer.erase(gps_buffer.begin());
 
-            lock.unlock();
+            imu_lock.unlock();
+            gps_lock.unlock();
             loop_rate.sleep();
+
+            initialized = true;
+
             continue;
         }
 
         // use imu predict location for increase locate frequency
+        // actual state no change
         for (auto &imu_msg : imu_buffer)
         {
-            double cur_imu_time = imu_msg->header.stamp.toSec();
-            if (cur_imu_time > last_imu_time)
+            Fusion::ImuData<double> cur_imu = fromImuMsg(*imu_msg);
+            if (cur_imu.stamp > last_imu.stamp)
             {
-                double dt = cur_imu_time - last_imu_time;
-                imu_gps_fuser.imuPredict(last_imu, dt);
-                last_imu = fromImuMsg(*imu_msg);
-                last_imu_time = cur_imu_time;
+                imu_gps_fuser.updateNominalState(last_imu, cur_imu);
+                last_imu = cur_imu;
             }
         }
 
@@ -160,17 +200,18 @@ void processThread()
             {
                 cout << "gps data is bad !!!" << endl;
                 gps_buffer.erase(gps_buffer.begin());
-                lock.unlock();
+                imu_lock.unlock();
+                gps_lock.unlock();
                 loop_rate.sleep();
                 continue;
             }
 
             // recover to last updated state for imu predict again
-            // imu_gps_fuser.recoverState(last_updated_state);
+            imu_gps_fuser.recoverState(last_updated_state);
 
             // collect imu datas during two neighbor gps frames
-            vector<pair<Fusion::ImuData<double>, double>> imu_datas(0);
-            // step0: search first imu data after gps data
+            vector<Fusion::ImuData<double>> imu_datas(0);
+            // search first imu data after gps data
             auto iter = imu_buffer.begin();
             for (; iter != imu_buffer.end(); iter++)
             {
@@ -179,59 +220,34 @@ void processThread()
             }
             if (imu_buffer.end() == iter) // no imu data after first gps data, wait for new imu data
             {
-                lock.unlock();
+                imu_lock.unlock();
+                gps_lock.unlock();
                 loop_rate.sleep();
                 continue;
             }
-            // step1: interpolate imu data at gps time
             assert(imu_buffer.begin() != iter);
+            // add last gps_imu data (interpolated data at gps time)
+            imu_datas.push_back(last_gps_imu);
+            // add imu data between last gps_imu data and current gps_imu data
+            for (auto tmp_iter = imu_buffer.begin(); tmp_iter != iter; tmp_iter++)
+                imu_datas.push_back(fromImuMsg(*(*tmp_iter)));
+            // add current gps_imu data
             sensor_msgs::Imu inter_imu;
             double cur_stamp = gps_buffer[0]->header.stamp.toSec();
             interpolateImuData(*(iter - 1), *iter, cur_stamp, inter_imu);
-            // step2: add imu data during last gps and first imu
-            pair<Fusion::ImuData<double>, double> first_data;
-            first_data.first = last_gps_imu;
-            first_data.second = imu_buffer[0]->header.stamp.toSec() - last_gps_time;
-            imu_datas.push_back(move(first_data));
-            // step3: add imu data during first imu and last imu before gps data
-            if (distance(imu_buffer.begin(), iter) >= 2)
-            {
-                for (auto tmp_iter = imu_buffer.begin(); tmp_iter != iter - 1; tmp_iter++)
-                {
-                    auto next_iter = tmp_iter + 1;
-                    pair<Fusion::ImuData<double>, double> tmp_data;
-                    tmp_data.first = fromImuMsg(*(*tmp_iter));
-                    tmp_data.second = ((*next_iter)->header.stamp - (*tmp_iter)->header.stamp).toSec();
-                    imu_datas.push_back(move(tmp_data));
-                }
-            }
-            // step4: add imu data during gps and last imu before gps data
-            pair<Fusion::ImuData<double>, double> last_data;
-            last_data.first = fromImuMsg(*(*(iter - 1)));
-            last_data.second = cur_stamp - (*(iter - 1))->header.stamp.toSec();
-            imu_datas.push_back(move(last_data));
+            Fusion::ImuData<double> cur_gps_imu = fromImuMsg(inter_imu);
+            cur_gps_imu.stamp = cur_stamp;
+            imu_datas.push_back(cur_gps_imu);
 
             // generate gps data
-            Fusion::GpsData<double> gps_data;
-            gps_data.data[0] = gps_buffer[0]->latitude;
-            gps_data.data[1] = gps_buffer[0]->longitude;
-            gps_data.data[2] = gps_buffer[0]->altitude;
-            gps_data.cov.setIdentity();
-            gps_data.cov(0, 0) = gps_buffer[0]->position_covariance[0];
-            gps_data.cov(1, 1) = gps_buffer[0]->position_covariance[4];
-            gps_data.cov(2, 2) = gps_buffer[0]->position_covariance[8];
+            Fusion::GpsData<double> gps_data = fromGpsMsg(*gps_buffer[0]);
 
             // update state (core)
-            imu_datas.clear();
             imu_gps_fuser.gpsUpdate(gps_data, imu_datas);
 
             // update last data
-            sensor_msgs::Imu gps_imu_msg;
-            interpolateImuData(*(iter - 1), *iter, cur_stamp, gps_imu_msg);
-            last_gps_imu = fromImuMsg(gps_imu_msg);
-            last_gps_time = cur_stamp;
+            last_gps_imu = cur_gps_imu;
             last_imu = last_gps_imu;
-            last_imu_time = last_gps_time;
 
             // delete old data
             gps_buffer.erase(gps_buffer.begin());
@@ -241,26 +257,11 @@ void processThread()
             last_updated_state = imu_gps_fuser.getState();
         }
 
-        // get result pose, and publish
-        if (traj_puber.getNumSubscribers() != 0)
-        {
-            Fusion::State<double> result = imu_gps_fuser.getNominalState();
-            geometry_msgs::PoseStamped pose;
-            pose.header.frame_id = "world";
-            pose.header.stamp = gps_buffer[0]->header.stamp;
-            pose.pose.position.x = result.p[0];
-            pose.pose.position.y = result.p[1];
-            pose.pose.position.z = result.p[2];
-            pose.pose.orientation.w = result.q.w();
-            pose.pose.orientation.x = result.q.x();
-            pose.pose.orientation.y = result.q.y();
-            pose.pose.orientation.z = result.q.z();
-            path.poses.push_back(pose);
-            path.header = pose.header;
-            traj_puber.publish(path);
-        }
+        // publish result
+        pubResult();
 
-        lock.unlock();
+        imu_lock.unlock();
+        gps_lock.unlock();
         loop_rate.sleep();
         continue;
     }
@@ -293,7 +294,8 @@ int main(int argc, char **argv)
     // start process
     thread process_thread(processThread);
 
-    ros::spin();
+    ros::MultiThreadedSpinner spinner(2);
+    spinner.spin();
 
     process_thread.join();
 

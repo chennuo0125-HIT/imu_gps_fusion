@@ -12,6 +12,7 @@ template <typename scalar>
 struct ImuData
 {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    double stamp;
     Eigen::Matrix<scalar, 3, 1> acc;
     Eigen::Matrix<scalar, 3, 1> gyr;
 };

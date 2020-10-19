@@ -1,5 +1,7 @@
 <launch>
 
+    <param name="use_sim_time" value="true"/>
+
     <node pkg="nmea_navsat_driver" type="nmea_topic_driver" name="nmea_topic_driver" output="screen"/>
 
     <node pkg="imu_gps_fusion" type="imu_gps_fusion_node" name="imu_gps_fusion_node" output="screen">
