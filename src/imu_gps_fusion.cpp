@@ -49,10 +49,10 @@ void ImuGpsFusion::imuInit(const vector<ImuData<double>> &imu_datas)
     mean_acc = total_acc / num;
     mean_gyr = total_gyr / num;
 
-    // init imu bias and pose
-    // no_state_.w_b = mean_gyr;
+    // init imu bias and pose (refer msckf_mono)
+    no_state_.w_b = mean_gyr;
     no_state_.q = Eigen::Quaterniond::FromTwoVectors(-g_, mean_acc);
-    // no_state_.a_b = no_state_.q * g_ + mean_acc;
+    no_state_.a_b = no_state_.q * g_ + mean_acc;
     ac_state_ = no_state_;
     cout << "use " << num << " imu datas to init imu pose and bias" << endl;
     cout << "init imu bias_w : " << no_state_.w_b[0] << " " << no_state_.w_b[1] << " " << no_state_.w_b[2] << endl;
@@ -82,15 +82,14 @@ void ImuGpsFusion::cfgRefGps(double latitude, double longitute, double altitude)
 void ImuGpsFusion::updateNominalState(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data)
 {
     double dt = imu_data.stamp - last_imu_data.stamp;
-    // cout << "befor : " << no_state_.p.transpose() << "   " << no_state_.v.transpose() << " " << no_state_.a_b.transpose() << endl;
+    // medium point integration
     Eigen::Vector3d imu_acc = 0.5 * (imu_data.acc + last_imu_data.acc);
     Eigen::Vector3d imu_gyr = 0.5 * (imu_data.gyr + last_imu_data.gyr);
     Eigen::Matrix3d R(no_state_.q);
     no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_acc - no_state_.a_b) + g_) * dt * dt;
     no_state_.v = no_state_.v + (R * (imu_acc - no_state_.a_b) + g_) * dt;
     Eigen::Vector3d q_v = (imu_gyr - no_state_.w_b) * dt;
-    if (q_v.norm() > 1e-12)
-        no_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(q_v.norm(), q_v.normalized()).toRotationMatrix());
+    no_state_.q = no_state_.q * getQuaFromAA(q_v);
 }
 
 void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
@@ -100,10 +99,8 @@ void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
     Eigen::Matrix3d R(no_state_.q);
     Fx_.block<3, 3>(3, 6) = -R * vectorToSkewSymmetric<double>(imu_data.acc - no_state_.a_b) * dt;
     Fx_.block<3, 3>(3, 9) = -R * dt;
-    // Fx_.block<3, 3>(6, 6) = getRotFromAngleAxis<double>((imu_data.gyr - no_state_.w_b) * dt);
+    Fx_.block<3, 3>(6, 6) = getRotFromAA<double>((imu_data.gyr - no_state_.w_b) * dt);
     Eigen::Vector3d delta_angle = (imu_data.gyr - no_state_.w_b) * dt;
-    if (delta_angle.norm() > 1e-12)
-        Fx_.block<3, 3>(6, 6) = Eigen::AngleAxisd(delta_angle.norm(), delta_angle.normalized()).toRotationMatrix();
     Fx_.block<3, 3>(6, 12) = -Eigen::Matrix3d::Identity() * dt;
 }
 
@@ -139,9 +136,7 @@ void ImuGpsFusion::updateH()
     X_dx.block<4, 3>(6, 6) *= 0.5;
 
     // use the chain rule to update H matrix
-    // H_ = Hx_ * X_dx;
-    H_.setZero();
-    H_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+    H_ = Hx_ * X_dx;
 }
 
 void ImuGpsFusion::updateV(const GpsData<double> &gps_data)
@@ -166,29 +161,24 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<ImuDa
 
     // update
     updateH();
-
     updateV(gps_data);
-
-    Eigen::Matrix<double, 15, 3>
-        K = P_ * H_.transpose() * (H_ * P_ * H_.transpose() + V_).inverse();
+    Eigen::Matrix<double, 15, 3> K = P_ * H_.transpose() * (H_ * P_ * H_.transpose() + V_).inverse();
     Eigen::Matrix<double, 15, 1> dX = K * (Eigen::Vector3d(enu[0], enu[1], enu[2]) - no_state_.p);
     ErrorState<double> estate;
-    estate.d_p = dX.block<3, 1>(0, 0);
-    estate.d_v = dX.block<3, 1>(3, 0);
-    estate.d_theta = dX.block<3, 1>(6, 0);
-    estate.d_a_b = dX.block<3, 1>(9, 0);
-    estate.d_w_b = dX.block<3, 1>(12, 0);
     Eigen::Matrix<double, 15, 15> I_KH = Eigen::Matrix<double, 15, 15>::Identity() - K * H_;
     P_ = I_KH * P_ * I_KH.transpose() + K * V_ * K.transpose();
-    ac_state_.p = no_state_.p + estate.d_p;
-    ac_state_.v = no_state_.v + estate.d_v;
-    // ac_state_.q = no_state_.q * Eigen::Quaterniond(1, estate.d_theta[0], estate.d_theta[1], estate.d_theta[2]);
-    if (estate.d_theta.norm() > 1e-12)
-        ac_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(estate.d_theta.norm(), estate.d_theta.normalized()).toRotationMatrix());
-    ac_state_.a_b = no_state_.a_b + estate.d_a_b;
-    ac_state_.w_b = no_state_.w_b + estate.d_w_b;
+    ac_state_.p = no_state_.p + dX.block<3, 1>(0, 0);
+    ac_state_.v = no_state_.v + dX.block<3, 1>(3, 0);
+    ac_state_.q = no_state_.q * getQuaFromAA(Eigen::Vector3d(dX.block<3, 1>(6, 0)));
+    ac_state_.a_b = no_state_.a_b + dX.block<3, 1>(9, 0);
+    ac_state_.w_b = no_state_.w_b + dX.block<3, 1>(12, 0);
     no_state_ = ac_state_;
     // cout << "upd : " << no_state_.p.transpose() << "    " << no_state_.v.transpose() << "     " << no_state_.a_b.transpose() << endl;
+}
+
+void ImuGpsFusion::recoverState(const Fusion::State<double> &last_updated_state)
+{
+    no_state_ = ac_state_ = last_updated_state;
 }
 
 State<double> ImuGpsFusion::getState()
@@ -199,11 +189,6 @@ State<double> ImuGpsFusion::getState()
 State<double> ImuGpsFusion::getNominalState()
 {
     return no_state_;
-}
-
-void ImuGpsFusion::recoverState(const Fusion::State<double> &last_updated_state)
-{
-    no_state_ = ac_state_ = last_updated_state;
 }
 
 } // namespace Fusion

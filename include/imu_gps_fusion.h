@@ -32,11 +32,11 @@ public:
     // config reference latitude and logitude for use in enu frame
     void cfgRefGps(double latitude, double longitute, double altitude);
 
-    // nominal state update, ref formula (156)
+    // nominal state update, refer formula (156)
     void
     updateNominalState(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data);
 
-    // calculate jacobi Fx, ref formula (166)
+    // calculate jacobi Fx, refer formula (166)
     void calcF(const ImuData<double> &imu_data, double dt);
 
     // update noise covariance matrix
