@@ -89,7 +89,7 @@ void ImuGpsFusion::updateNominalState(const ImuData<double> &last_imu_data, cons
     no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_acc - no_state_.a_b) + g_) * dt * dt;
     no_state_.v = no_state_.v + (R * (imu_acc - no_state_.a_b) + g_) * dt;
     Eigen::Vector3d q_v = (imu_gyr - no_state_.w_b) * dt;
-    no_state_.q = no_state_.q * getQuaFromAA(q_v);
+    no_state_.q = no_state_.q * getQuaFromAA<double>(q_v);
 }
 
 void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
@@ -169,7 +169,7 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<ImuDa
     P_ = I_KH * P_ * I_KH.transpose() + K * V_ * K.transpose();
     ac_state_.p = no_state_.p + dX.block<3, 1>(0, 0);
     ac_state_.v = no_state_.v + dX.block<3, 1>(3, 0);
-    ac_state_.q = no_state_.q * getQuaFromAA(Eigen::Vector3d(dX.block<3, 1>(6, 0)));
+    ac_state_.q = no_state_.q * getQuaFromAA<double>(Eigen::Vector3d(dX.block<3, 1>(6, 0)));
     ac_state_.a_b = no_state_.a_b + dX.block<3, 1>(9, 0);
     ac_state_.w_b = no_state_.w_b + dX.block<3, 1>(12, 0);
     no_state_ = ac_state_;

@@ -35,18 +35,18 @@ Eigen::Matrix<scalar, 3, 3> getRotFromAA(Eigen::Matrix<scalar, 3, 1> vec)
 
 // tranform angleaxis to quaternion
 template <typename scalar>
-Eigen::Quaternion<double> getQuaFromAA(Eigen::Matrix<scalar, 3, 1> vec)
+Eigen::Quaternion<scalar> getQuaFromAA(Eigen::Matrix<scalar, 3, 1> vec)
 {
     scalar theta = sqrt(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);
     if (0 == theta)
-        return Eigen::Quaternion<double>::Identity();
+        return Eigen::Quaternion<scalar>::Identity();
     Eigen::Matrix<scalar, 3, 1> unit_axis = vec / theta;
-    double w = cos(0.5 * theta);
-    double sin_t = sin(0.5 * theta);
-    double x = unit_axis[0] * sin_t;
-    double y = unit_axis[1] * sin_t;
-    double z = unit_axis[2] * sin_t;
-    Eigen::Quaternion<double> qua(w, x, y, z);
+    scalar w = cos(0.5 * theta);
+    scalar sin_t = sin(0.5 * theta);
+    scalar x = unit_axis[0] * sin_t;
+    scalar y = unit_axis[1] * sin_t;
+    scalar z = unit_axis[2] * sin_t;
+    Eigen::Quaternion<scalar> qua(w, x, y, z);
     qua.normalized();
 
     return qua;
