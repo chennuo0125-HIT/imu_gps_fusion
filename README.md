@@ -2,6 +2,4 @@
 
 ## Used in
 
--reference paper 
-
-[Quaterniond kinematics for the error-state Kalman filter]: http://www.iri.upc.edu/people/jsola/JoanSola/objectes/notes/kinematics.pdf
+-reference paper http://www.iri.upc.edu/people/jsola/JoanSola/objectes/notes/kinematics.pdf
