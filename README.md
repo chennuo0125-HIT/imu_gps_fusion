@@ -17,3 +17,7 @@ Eigen3
 ## Dataset
 
 https://drive.utbm.fr/s/B9eq899fQ4NdWYn
+
+## Result
+
+![](/home/cn/learn_ws/src/imu_gps_fusion/result.png)

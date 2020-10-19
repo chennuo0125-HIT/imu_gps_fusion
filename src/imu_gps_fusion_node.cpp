@@ -147,7 +147,7 @@ void processThread()
             if (cur_imu_time > last_imu_time)
             {
                 double dt = cur_imu_time - last_imu_time;
-                imu_gps_fuser.updateNominalState(last_imu, dt);
+                imu_gps_fuser.imuPredict(last_imu, dt);
                 last_imu = fromImuMsg(*imu_msg);
                 last_imu_time = cur_imu_time;
             }
@@ -156,8 +156,17 @@ void processThread()
         // use gps data to update state
         if (gps_buffer.size() != 0)
         {
+            if (gps_buffer.front()->status.status != 2)
+            {
+                cout << "gps data is bad !!!" << endl;
+                gps_buffer.erase(gps_buffer.begin());
+                lock.unlock();
+                loop_rate.sleep();
+                continue;
+            }
+
             // recover to last updated state for imu predict again
-            imu_gps_fuser.recoverState(last_updated_state);
+            // imu_gps_fuser.recoverState(last_updated_state);
 
             // collect imu datas during two neighbor gps frames
             vector<pair<Fusion::ImuData<double>, double>> imu_datas(0);
@@ -213,6 +222,7 @@ void processThread()
             gps_data.cov(2, 2) = gps_buffer[0]->position_covariance[8];
 
             // update state (core)
+            imu_datas.clear();
             imu_gps_fuser.gpsUpdate(gps_data, imu_datas);
 
             // update last data

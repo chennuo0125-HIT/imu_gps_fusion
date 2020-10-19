@@ -86,7 +86,8 @@ void ImuGpsFusion::updateNominalState(const ImuData<double> &imu_data, double dt
     no_state_.p = no_state_.p + no_state_.v * dt + 0.5 * (R * (imu_data.acc - no_state_.a_b) + g_) * dt * dt;
     no_state_.v = no_state_.v + (R * (imu_data.acc - no_state_.a_b) + g_) * dt;
     Eigen::Vector3d q_v = (imu_data.gyr - no_state_.w_b) * dt;
-    no_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(q_v.norm(), q_v.normalized()).toRotationMatrix());
+    if (q_v.norm() > 1e-12)
+        no_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(q_v.norm(), q_v.normalized()).toRotationMatrix());
 }
 
 void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
@@ -98,7 +99,8 @@ void ImuGpsFusion::calcF(const ImuData<double> &imu_data, double dt)
     Fx_.block<3, 3>(3, 9) = -R * dt;
     // Fx_.block<3, 3>(6, 6) = getRotFromAngleAxis<double>((imu_data.gyr - no_state_.w_b) * dt);
     Eigen::Vector3d delta_angle = (imu_data.gyr - no_state_.w_b) * dt;
-    Fx_.block<3, 3>(6, 6) = Eigen::AngleAxisd(delta_angle.norm(), delta_angle.normalized()).toRotationMatrix();
+    if (delta_angle.norm() > 1e-12)
+        Fx_.block<3, 3>(6, 6) = Eigen::AngleAxisd(delta_angle.norm(), delta_angle.normalized()).toRotationMatrix();
     Fx_.block<3, 3>(6, 12) = -Eigen::Matrix3d::Identity() * dt;
 }
 
@@ -172,7 +174,8 @@ void ImuGpsFusion::gpsUpdate(const GpsData<double> &gps_data, const vector<pair<
     ac_state_.p = no_state_.p + estate.d_p;
     ac_state_.v = no_state_.v + estate.d_v;
     // ac_state_.q = no_state_.q * Eigen::Quaterniond(1, estate.d_theta[0], estate.d_theta[1], estate.d_theta[2]);
-    ac_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(estate.d_theta.norm(), estate.d_theta.normalized()).toRotationMatrix());
+    if (estate.d_theta.norm() > 1e-12)
+        ac_state_.q = no_state_.q * Eigen::Quaterniond(Eigen::AngleAxisd(estate.d_theta.norm(), estate.d_theta.normalized()).toRotationMatrix());
     ac_state_.a_b = no_state_.a_b + estate.d_a_b;
     ac_state_.w_b = no_state_.w_b + estate.d_w_b;
     no_state_ = ac_state_;
