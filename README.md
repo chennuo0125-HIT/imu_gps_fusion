@@ -1,4 +1,7 @@
 # Imu and Gps Fusion by ESKF
+## Explain
+- [https://blog.csdn.net/weixin_37835423/article/details/109452148](https://blog.csdn.net/weixin_37835423/article/details/109452148)
+- [https://blog.csdn.net/weixin_37835423/article/details/109476346](https://blog.csdn.net/weixin_37835423/article/details/109476346)
 
 ## Requirements
 
